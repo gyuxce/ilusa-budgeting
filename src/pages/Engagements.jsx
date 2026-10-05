@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
 import { useEngagements, useCreateEngagement, useCreateEngagementsBulk, useUpdateEngagement, useDeleteEngagement } from '../lib/queries/engagements';
 import { useClients } from '../lib/queries/clients';
-import { useServices } from '../lib/queries/services';
+import { useServices, useCreateService } from '../lib/queries/services';
 import { PageHeader } from '../components/ui/PageHeader';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
@@ -26,6 +26,7 @@ export default function Engagements() {
   const createEngagementsBulk = useCreateEngagementsBulk();
   const updateEngagement = useUpdateEngagement();
   const deleteEngagement = useDeleteEngagement();
+  const createService = useCreateService();
 
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -53,6 +54,9 @@ export default function Engagements() {
   });
   const [formError, setFormError] = useState('');
   const [successToast, setSuccessToast] = useState(false);
+  const [showCustomService, setShowCustomService] = useState(false);
+  const [customService, setCustomService] = useState({ name: '', service_type: 'monthly' });
+  const [customServiceError, setCustomServiceError] = useState('');
 
   // Filters logic
   const filteredEngagements = useMemo(() => {
@@ -106,6 +110,9 @@ export default function Engagements() {
       notes: ''
     });
     setFormError('');
+    setShowCustomService(false);
+    setCustomService({ name: '', service_type: 'monthly' });
+    setCustomServiceError('');
     setIsModalOpen(true);
   };
 
@@ -128,7 +135,44 @@ export default function Engagements() {
       notes: eng.notes || ''
     });
     setFormError('');
+    setShowCustomService(false);
+    setCustomService({ name: '', service_type: 'monthly' });
+    setCustomServiceError('');
     setIsModalOpen(true);
+  };
+
+  const handleAddCustomService = async () => {
+    setCustomServiceError('');
+    const name = customService.name.trim();
+    if (!name) {
+      setCustomServiceError('Nama layanan wajib diisi.');
+      return;
+    }
+    try {
+      const newService = await createService.mutateAsync({
+        name,
+        service_type: customService.service_type,
+        fee_type: 'fixed',
+      });
+      if (editingEngagement) {
+        setFormData((previous) => ({ ...previous, service_id: newService.id }));
+      } else {
+        setFormData((previous) => ({
+          ...previous,
+          selected_service_ids: [...previous.selected_service_ids, newService.id],
+          service_fees: { ...previous.service_fees, [newService.id]: 0 },
+          list_price_labels: { ...previous.list_price_labels, [newService.id]: '' },
+        }));
+      }
+      setShowCustomService(false);
+      setCustomService({ name: '', service_type: 'monthly' });
+    } catch (err) {
+      if (err.message.includes('unique constraint') || err.message.includes('already exists') || err.message.includes('duplicate key value')) {
+        setCustomServiceError('Layanan dengan nama dan jenis ini sudah ada.');
+      } else {
+        setCustomServiceError(err.message);
+      }
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -423,6 +467,39 @@ export default function Engagements() {
                     ...(services?.map(s => ({ value: s.id, label: `${s.name} (${s.service_type === 'monthly' ? 'Bulanan' : 'Sekali'})` })) || [])
                   ]}
                 />
+                {!showCustomService ? (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Layanan tidak ada di daftar?{' '}
+                    <button type="button" className="text-blue-600 underline hover:text-blue-700" onClick={() => setShowCustomService(true)}>
+                      Tambah layanan custom
+                    </button>
+                  </p>
+                ) : (
+                  <div className="mt-2 space-y-2 rounded-md border border-gray-200 bg-gray-50 p-3">
+                    {customServiceError && <p className="text-xs text-red-600">{customServiceError}</p>}
+                    <Input
+                      label="Nama Layanan Custom *"
+                      autoFocus
+                      maxLength={120}
+                      placeholder="Ketik nama layanan..."
+                      value={customService.name}
+                      onChange={e => setCustomService({ ...customService, name: e.target.value })}
+                    />
+                    <Select
+                      label="Jenis Layanan"
+                      value={customService.service_type}
+                      onChange={e => setCustomService({ ...customService, service_type: e.target.value })}
+                      options={[
+                        { value: 'monthly', label: 'Bulanan' },
+                        { value: 'one_time', label: 'Sekali' }
+                      ]}
+                    />
+                    <div className="flex gap-2">
+                      <Button type="button" size="sm" onClick={handleAddCustomService} disabled={createService.isPending}>Simpan Layanan</Button>
+                      <Button type="button" size="sm" variant="secondary" onClick={() => { setShowCustomService(false); setCustomServiceError(''); }}>Batal</Button>
+                    </div>
+                  </div>
+                )}
               </div>
               <CurrencyInput
                 label={selectedServiceObj?.service_type === 'one_time' ? 'Nominal Layanan *' : 'Nominal per Bulan *'}
@@ -490,6 +567,42 @@ export default function Engagements() {
                 {services?.length === 0 && <p className="text-sm text-gray-500">Belum ada layanan. Tambahkan layanan terlebih dahulu.</p>}
               </div>
               <p className="text-xs text-gray-500 mt-1">Setiap layanan yang dicentang akan dibuat sebagai satu project untuk client yang sama.</p>
+
+              {!showCustomService ? (
+                <button
+                  type="button"
+                  className="mt-2 text-sm text-blue-600 underline hover:text-blue-700"
+                  onClick={() => setShowCustomService(true)}
+                >
+                  + Tambah layanan custom
+                </button>
+              ) : (
+                <div className="mt-2 space-y-2 rounded-md border border-gray-200 bg-gray-50 p-3">
+                  {customServiceError && <p className="text-xs text-red-600">{customServiceError}</p>}
+                  <Input
+                    label="Nama Layanan Custom *"
+                    autoFocus
+                    maxLength={120}
+                    placeholder="Ketik nama layanan..."
+                    value={customService.name}
+                    onChange={e => setCustomService({ ...customService, name: e.target.value })}
+                  />
+                  <Select
+                    label="Jenis Layanan"
+                    value={customService.service_type}
+                    onChange={e => setCustomService({ ...customService, service_type: e.target.value })}
+                    options={[
+                      { value: 'monthly', label: 'Bulanan' },
+                      { value: 'one_time', label: 'Sekali' }
+                    ]}
+                  />
+                  <p className="text-xs text-gray-500">Layanan ini otomatis dicentang dan ditambahkan ke daftar layanan setelah disimpan.</p>
+                  <div className="flex gap-2">
+                    <Button type="button" size="sm" onClick={handleAddCustomService} disabled={createService.isPending}>Simpan Layanan</Button>
+                    <Button type="button" size="sm" variant="secondary" onClick={() => { setShowCustomService(false); setCustomServiceError(''); }}>Batal</Button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
