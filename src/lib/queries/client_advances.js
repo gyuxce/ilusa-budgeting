@@ -169,6 +169,79 @@ export function useCreateCompanyExpense() {
   });
 }
 
+export function useUpdateClientExpense() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ id, ...expenseData }) => {
+      const isOutsideBudget = expenseData.funding_source === 'outside_budget';
+      const entityType = isOutsideBudget ? CLIENT_ADVANCE_ENTITY : CLIENT_EXPENSE_ENTITY;
+      const metadata = {
+        ...expenseData,
+        status: isOutsideBudget ? (expenseData.status || 'open') : 'paid',
+        reimbursed_date: isOutsideBudget ? (expenseData.reimbursed_date || null) : null,
+      };
+      const { data, error } = await supabase
+        .from('audit_logs')
+        .update({
+          action: `${entityType}.updated`,
+          entity_type: entityType,
+          entity_id: expenseData.client_id,
+          metadata,
+        })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw new Error(error.message);
+      return data.metadata;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['client_advances'] });
+      queryClient.invalidateQueries({ queryKey: ['client_expenses'] });
+    },
+  });
+}
+
+export function useUpdateCompanyExpense() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ id, ...expenseData }) => {
+      const { data, error } = await supabase
+        .from('audit_logs')
+        .update({
+          action: 'company_expense.updated',
+          metadata: expenseData,
+        })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw new Error(error.message);
+      return data.metadata;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['company_expenses'] }),
+  });
+}
+
+export function useDeleteCompanyExpense() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (id) => {
+      const { error } = await supabase
+        .from('audit_logs')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw new Error(error.message);
+      return true;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['company_expenses'] }),
+  });
+}
+
 export function useUpdateClientAdvance() {
   const queryClient = useQueryClient();
 

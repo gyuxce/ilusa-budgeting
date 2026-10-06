@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react';
-import { ArrowDownRight, Check, ExternalLink, Plus, RotateCcw, WalletCards } from 'lucide-react';
+import { ArrowDownRight, Check, ExternalLink, Pencil, Plus, RotateCcw, Trash2, WalletCards } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
   useFreelancerFees,
   useCreateFreelancerFee,
+  useUpdateFreelancerFee,
+  useDeleteFreelancerFee,
   useMarkFeePaid,
   useMarkFeeUnpaid,
 } from '../lib/queries/freelancer_fees';
@@ -15,6 +17,10 @@ import {
   useCompanyExpenses,
   useCreateClientExpense,
   useCreateCompanyExpense,
+  useUpdateClientExpense,
+  useUpdateCompanyExpense,
+  useDeleteClientAdvance,
+  useDeleteCompanyExpense,
   useUpdateClientAdvance,
 } from '../lib/queries/client_advances';
 import { currentMonthKey, lastNMonths } from '../lib/utils';
@@ -93,16 +99,24 @@ export default function Expenses() {
   const { data: engagements } = useEngagements();
   const { data: clients, isLoading: clientsLoading } = useClients();
   const createFee = useCreateFreelancerFee();
+  const updateFee = useUpdateFreelancerFee();
+  const deleteFee = useDeleteFreelancerFee();
   const markFeePaid = useMarkFeePaid();
   const markFeeUnpaid = useMarkFeeUnpaid();
   const createClientExpense = useCreateClientExpense();
+  const updateClientExpense = useUpdateClientExpense();
+  const deleteClientExpense = useDeleteClientAdvance();
   const createCompanyExpense = useCreateCompanyExpense();
+  const updateCompanyExpense = useUpdateCompanyExpense();
+  const deleteCompanyExpense = useDeleteCompanyExpense();
   const updateAdvance = useUpdateClientAdvance();
 
   const [activeTab, setActiveTab] = useState('all');
   const [periodFilter, setPeriodFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingRow, setEditingRow] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [formData, setFormData] = useState(createDefaultForm());
   const [formError, setFormError] = useState('');
   const [actionError, setActionError] = useState('');
@@ -192,8 +206,62 @@ export default function Expenses() {
     };
   }, [rows, periodFilter]);
 
+  const formFromRow = (row) => {
+    if (row.source === 'fee') {
+      const fee = row.raw;
+      return {
+        ...createDefaultForm('freelancer'),
+        freelancer_id: fee.freelancer_id || '',
+        engagement_id: fee.engagement_id || '',
+        amount: String(fee.fixed_amount ?? fee.calculated_fee ?? ''),
+        date: fee.paid_date || todayKey(),
+        period_month: fee.period_month || currentMonthKey(),
+        status: fee.status === 'paid' ? 'paid' : 'pending',
+        notes: fee.notes || '',
+      };
+    }
+    if (row.source === 'company') {
+      const expense = row.raw;
+      return {
+        ...createDefaultForm('company'),
+        title: expense.title || '',
+        category: expense.category || 'other',
+        amount: String(expense.amount ?? ''),
+        date: expense.spend_date || todayKey(),
+        period_month: expense.period_month || currentMonthKey(),
+        notes: expense.notes || '',
+      };
+    }
+    const expense = row.raw;
+    return {
+      ...createDefaultForm('client'),
+      client_id: expense.client_id || '',
+      title: expense.title || '',
+      category: expense.category || 'other',
+      funding_source: expense.funding_source || 'within_budget',
+      amount: String(expense.amount ?? ''),
+      date: expense.spend_date || todayKey(),
+      period_month: expense.period_month || currentMonthKey(),
+      notes: expense.notes || '',
+    };
+  };
+
   const openModal = (type = 'client') => {
+    setEditingRow(null);
     setFormData(createDefaultForm(type));
+    setFormError('');
+    setActionError('');
+    setIsModalOpen(true);
+  };
+
+  const openEditModal = (row, event) => {
+    event?.stopPropagation();
+    if (row.source === 'fee' && row.raw.fee_type !== 'fixed') {
+      setActionError('Fee dengan skema per jam/per konten hanya bisa diedit lewat halaman Fee Freelancer.');
+      return;
+    }
+    setEditingRow(row);
+    setFormData(formFromRow(row));
     setFormError('');
     setActionError('');
     setIsModalOpen(true);
@@ -216,7 +284,9 @@ export default function Expenses() {
           return;
         }
 
-        await createClientExpense.mutateAsync({
+        const original = editingRow?.raw;
+        const sameFundingSource = editingRow && original?.funding_source === formData.funding_source;
+        const payload = {
           client_id: formData.client_id,
           title: formData.title.trim(),
           category: formData.category,
@@ -224,51 +294,79 @@ export default function Expenses() {
           spend_date: formData.date,
           period_month: formData.period_month,
           funding_source: formData.funding_source,
+          status: sameFundingSource ? original.status : undefined,
+          reimbursed_date: sameFundingSource ? original.reimbursed_date : undefined,
           notes: formData.notes.trim() || null,
-        });
+        };
+
+        if (editingRow) {
+          await updateClientExpense.mutateAsync({ id: editingRow.sourceId, ...payload });
+        } else {
+          await createClientExpense.mutateAsync(payload);
+        }
       } else if (formData.type === 'company') {
         if (!formData.title.trim() || !formData.date || !formData.period_month) {
           setFormError('Keterangan dan tanggal bayar wajib diisi.');
           return;
         }
 
-        await createCompanyExpense.mutateAsync({
+        const payload = {
           title: formData.title.trim(),
           category: formData.category,
           amount,
           spend_date: formData.date,
           period_month: formData.period_month,
           notes: formData.notes.trim() || null,
-        });
+        };
+
+        if (editingRow) {
+          await updateCompanyExpense.mutateAsync({ id: editingRow.sourceId, ...payload });
+        } else {
+          await createCompanyExpense.mutateAsync(payload);
+        }
       } else {
         if (!formData.freelancer_id || !formData.engagement_id || !formData.period_month) {
           setFormError('Freelancer, project, dan bulan wajib diisi.');
           return;
         }
 
-        await createFee.mutateAsync({
-          freelancer_id: formData.freelancer_id,
-          engagement_id: formData.engagement_id,
-          period_month: formData.period_month,
-          fee_type: 'fixed',
-          fixed_amount: amount,
-          hourly_rate: null,
-          hours_per_day: null,
-          working_days: null,
-          off_days: null,
-          rate_single_post: null,
-          qty_single_post: null,
-          rate_carousel: null,
-          qty_carousel: null,
-          rate_reels: null,
-          qty_reels: null,
-          status: formData.status,
-          paid_date: formData.status === 'paid' ? formData.date : null,
-          notes: formData.notes.trim() || null,
-        });
+        if (editingRow) {
+          await updateFee.mutateAsync({
+            id: editingRow.sourceId,
+            freelancer_id: formData.freelancer_id,
+            engagement_id: formData.engagement_id,
+            period_month: formData.period_month,
+            fixed_amount: amount,
+            status: formData.status,
+            paid_date: formData.status === 'paid' ? formData.date : null,
+            notes: formData.notes.trim() || null,
+          });
+        } else {
+          await createFee.mutateAsync({
+            freelancer_id: formData.freelancer_id,
+            engagement_id: formData.engagement_id,
+            period_month: formData.period_month,
+            fee_type: 'fixed',
+            fixed_amount: amount,
+            hourly_rate: null,
+            hours_per_day: null,
+            working_days: null,
+            off_days: null,
+            rate_single_post: null,
+            qty_single_post: null,
+            rate_carousel: null,
+            qty_carousel: null,
+            rate_reels: null,
+            qty_reels: null,
+            status: formData.status,
+            paid_date: formData.status === 'paid' ? formData.date : null,
+            notes: formData.notes.trim() || null,
+          });
+        }
       }
 
       setIsModalOpen(false);
+      setEditingRow(null);
     } catch (error) {
       setFormError(error.message);
     }
@@ -281,6 +379,20 @@ export default function Expenses() {
       else await markFeePaid.mutateAsync(row.sourceId);
     } catch (error) {
       setActionError(error.message);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setActionError('');
+    try {
+      if (deleteTarget.source === 'fee') await deleteFee.mutateAsync(deleteTarget.sourceId);
+      else if (deleteTarget.source === 'client') await deleteClientExpense.mutateAsync(deleteTarget.sourceId);
+      else await deleteCompanyExpense.mutateAsync(deleteTarget.sourceId);
+      setDeleteTarget(null);
+    } catch (error) {
+      setActionError(error.message);
+      setDeleteTarget(null);
     }
   };
 
@@ -351,12 +463,27 @@ export default function Expenses() {
               <ExternalLink size={14} />
             </Link>
           )}
+          {(row.source !== 'fee' || row.raw.fee_type === 'fixed') && (
+            <Button variant="ghost" size="sm" onClick={(event) => openEditModal(row, event)} title="Edit">
+              <Pencil size={14} />
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-red-500 hover:bg-red-50 hover:text-red-600"
+            onClick={() => setDeleteTarget({ source: row.source, sourceId: row.sourceId })}
+            title="Hapus"
+          >
+            <Trash2 size={14} />
+          </Button>
         </div>
       ),
     },
   ];
 
-  const isSaving = createFee.isPending || createClientExpense.isPending || createCompanyExpense.isPending;
+  const isSaving = createFee.isPending || createClientExpense.isPending || createCompanyExpense.isPending
+    || updateFee.isPending || updateClientExpense.isPending || updateCompanyExpense.isPending;
   const isLoading = feesLoading || clientExpensesLoading || companyExpensesLoading || clientsLoading;
 
   if (isLoading) {
@@ -432,18 +559,18 @@ export default function Expenses() {
           action={<Button onClick={() => openModal(activeTab === 'project' ? 'freelancer' : activeTab === 'company' ? 'company' : 'client')}>Tambah Pengeluaran</Button>}
         />
       ) : (
-        <DataTable columns={columns} rows={filteredRows} emptyMessage="Tidak ada pengeluaran yang cocok dengan filter" />
+        <DataTable columns={columns} rows={filteredRows} onRowClick={(row) => openEditModal(row)} emptyMessage="Tidak ada pengeluaran yang cocok dengan filter" />
       )}
 
       <Modal
         open={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        title="Tambah Pengeluaran"
+        title={editingRow ? 'Edit Pengeluaran' : 'Tambah Pengeluaran'}
         maxWidthClass="max-w-lg"
         footer={(
           <>
             <Button type="button" variant="secondary" onClick={() => setIsModalOpen(false)}>Batal</Button>
-            <Button type="button" onClick={handleSubmit} disabled={isSaving}>Simpan</Button>
+            <Button type="button" onClick={handleSubmit} disabled={isSaving}>{editingRow ? 'Update' : 'Simpan'}</Button>
           </>
         )}
       >
@@ -453,16 +580,17 @@ export default function Expenses() {
           <div>
             <p className="mb-2 text-sm font-medium text-gray-700">Untuk apa biaya ini? *</p>
             <div className="grid grid-cols-3 gap-2">
-              <Button className="h-10 w-full min-w-0 whitespace-nowrap px-2 text-xs" type="button" variant={formData.type === 'client' ? 'primary' : 'secondary'} onClick={() => setFormData({ ...formData, type: 'client' })}>
+              <Button disabled={!!editingRow} className="h-10 w-full min-w-0 whitespace-nowrap px-2 text-xs" type="button" variant={formData.type === 'client' ? 'primary' : 'secondary'} onClick={() => setFormData({ ...formData, type: 'client' })}>
                 Client
               </Button>
-              <Button className="h-10 w-full min-w-0 whitespace-nowrap px-2 text-xs" type="button" variant={formData.type === 'freelancer' ? 'primary' : 'secondary'} onClick={() => setFormData({ ...formData, type: 'freelancer' })}>
+              <Button disabled={!!editingRow} className="h-10 w-full min-w-0 whitespace-nowrap px-2 text-xs" type="button" variant={formData.type === 'freelancer' ? 'primary' : 'secondary'} onClick={() => setFormData({ ...formData, type: 'freelancer' })}>
                 Project
               </Button>
-              <Button className="h-10 w-full min-w-0 whitespace-nowrap px-2 text-xs" type="button" variant={formData.type === 'company' ? 'primary' : 'secondary'} onClick={() => setFormData({ ...formData, type: 'company' })}>
+              <Button disabled={!!editingRow} className="h-10 w-full min-w-0 whitespace-nowrap px-2 text-xs" type="button" variant={formData.type === 'company' ? 'primary' : 'secondary'} onClick={() => setFormData({ ...formData, type: 'company' })}>
                 Operasional PT
               </Button>
             </div>
+            {editingRow && <p className="mt-1 text-xs text-gray-500">Jenis biaya tidak bisa diubah saat edit.</p>}
           </div>
 
           <div className="min-h-[360px] space-y-3">
@@ -537,6 +665,20 @@ export default function Expenses() {
 
           <Textarea label="Catatan" rows={3} placeholder="Opsional" value={formData.notes} onChange={(event) => setFormData({ ...formData, notes: event.target.value })} />
         </form>
+      </Modal>
+
+      <Modal
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        title="Hapus Pengeluaran"
+        footer={(
+          <>
+            <Button variant="secondary" onClick={() => setDeleteTarget(null)}>Batal</Button>
+            <Button variant="danger" onClick={confirmDelete} disabled={deleteFee.isPending || deleteClientExpense.isPending || deleteCompanyExpense.isPending}>Hapus</Button>
+          </>
+        )}
+      >
+        <p className="text-sm text-gray-600">Hapus catatan pengeluaran ini? Data tidak bisa dikembalikan.</p>
       </Modal>
     </>
   );
